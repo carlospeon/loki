@@ -61,6 +61,7 @@ type chunkFetcher interface {
 
 type IndexStore interface {
 	GetChunkRefs(ctx context.Context, userID string, from, through model.Time, matchers ...*labels.Matcher) ([]logproto.ChunkRef, error)
+	GetObjectRefs(ctx context.Context, userID string, from, through model.Time) ([]string, error)
 	GetSeries(ctx context.Context, userID string, from, through model.Time, matchers ...*labels.Matcher) ([]labels.Labels, error)
 	LabelValuesForMetricName(ctx context.Context, userID string, from, through model.Time, metricName string, labelName string, matchers ...*labels.Matcher) ([]string, error)
 	LabelNamesForMetricName(ctx context.Context, userID string, from, through model.Time, metricName string) ([]string, error)
@@ -90,7 +91,16 @@ func NewIndexStore(schemaCfg config.SchemaConfig, schema index.SeriesStoreSchema
 	}
 }
 
-func (c *indexStore) GetChunkRefs(ctx context.Context, userID string, from, through model.Time, allMatchers ...*labels.Matcher) ([]logproto.ChunkRef, error) {
+func (c *indexStore) GetObjectRefs(ctx context.Context, userID string, from, through model.Time) ([]string, error) {
+	m := labels.Matcher{
+		Type:  labels.MatchEqual,
+		Name:  "__name__",
+		Value: "logs",
+	}
+	return c.getObjectRefs(ctx, userID, from, through, &m)
+}
+
+func (c *indexStore) getObjectRefs(ctx context.Context, userID string, from, through model.Time, allMatchers ...*labels.Matcher) ([]string, error) {
 	log := util_log.WithContext(ctx, util_log.Logger)
 	// Check there is a metric name matcher of type equal,
 	metricNameMatcher, matchers, ok := extract.MetricNameMatcherFromMatchers(allMatchers)
@@ -105,7 +115,9 @@ func (c *indexStore) GetChunkRefs(ctx context.Context, userID string, from, thro
 	if err != nil {
 		return nil, err
 	}
-	level.Debug(log).Log("series-ids", len(seriesIDs))
+	for _, sID := range seriesIDs {
+		level.Info(log).Log("seriesID", sID)
+	}
 
 	// Lookup the series in the index to get the chunks.
 	chunkIDs, err := c.lookupChunksBySeries(ctx, from, through, userID, seriesIDs)
@@ -114,7 +126,13 @@ func (c *indexStore) GetChunkRefs(ctx context.Context, userID string, from, thro
 		return nil, err
 	}
 	level.Debug(log).Log("chunk-ids", len(chunkIDs))
+	return chunkIDs, err
+}
 
+func (c *indexStore) GetChunkRefs(ctx context.Context, userID string, from, through model.Time, allMatchers ...*labels.Matcher) ([]logproto.ChunkRef, error) {
+	log := util_log.WithContext(ctx, util_log.Logger)
+
+	chunkIDs, err := c.getObjectRefs(ctx, userID, from, through, allMatchers...)
 	chunks, err := c.convertChunkIDsToChunkRefs(ctx, userID, chunkIDs)
 	if err != nil {
 		level.Error(log).Log("op", "convertChunkIDsToChunks", "err", err)
@@ -419,6 +437,7 @@ func (c *indexStore) lookupIdsByMetricNameMatcher(ctx context.Context, from, thr
 	} else if matcher.Type == labels.MatchEqual {
 		labelName = matcher.Name
 		queries, err = c.schema.GetReadQueriesForMetricLabelValue(from, through, userID, metricName, matcher.Name, matcher.Value)
+		level.Info(util_log.Logger).Log("queries", queries)
 	} else {
 		labelName = matcher.Name
 		queries, err = c.schema.GetReadQueriesForMetricLabel(from, through, userID, metricName, matcher.Name)
